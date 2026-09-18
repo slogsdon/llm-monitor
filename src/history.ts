@@ -1,17 +1,6 @@
 import type { Snapshot } from './types.ts';
 
 export const WINDOW_MS = 60_000;
-const BARS = '▁▂▃▄▅▆▇█';
-
-export function sparkline(values: number[], width = 20): string {
-  const tail = values.slice(-width);
-  if (!tail.length) return '';
-  const max = Math.max(...tail);
-  return tail
-    .map((value) => BARS[max > 0 ? Math.min(BARS.length - 1, Math.floor((value / max) * BARS.length)) : 0])
-    .join('');
-}
-
 export const seriesKey = (provider: string, modelId: string) => `${provider}/${modelId}`;
 
 export class History {

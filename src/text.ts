@@ -11,7 +11,7 @@ export function paint(color: Color, text: string): string {
 
 export const STATUS_COLOR: Record<Status, Color> = { up: 'green', degraded: 'yellow', down: 'red' };
 export const STATUS_LABEL: Record<Status, string> = { up: 'UP', degraded: 'DEGRADED', down: 'OFFLINE' };
-export const STATUS_DOT: Record<Status, string> = { up: '●', degraded: '◐', down: '○' };
+export const OVERALL_LABEL: Record<Status, string> = { up: 'HEALTHY', degraded: 'DEGRADED', down: 'UNREACHABLE' };
 
 export function stateColor(state: string): Color {
   if (state === 'ready') return 'green';
@@ -19,9 +19,45 @@ export function stateColor(state: string): Color {
   return 'dim';
 }
 
-export function pressureColor(percent?: number): Color {
+export function levelColor(percent?: number): Color {
   if (percent === undefined) return 'dim';
-  return percent >= 80 ? 'red' : percent >= 60 ? 'yellow' : 'green';
+  return percent >= 85 ? 'red' : percent >= 65 ? 'yellow' : 'green';
+}
+
+// Box drawing and block glyphs need a UTF-8 locale; otherwise fall back to ASCII.
+let asciiForced = false;
+export const setAscii = (value: boolean) => {
+  asciiForced = value;
+};
+export function unicode(): boolean {
+  if (asciiForced || process.env.LLM_MONITOR_ASCII) return false;
+  return /utf-?8/i.test(process.env.LC_ALL || process.env.LC_CTYPE || process.env.LANG || 'utf-8');
+}
+
+export const glyphs = () =>
+  unicode()
+    ? { dot: { up: '●', degraded: '◐', down: '○' }, filled: '▰', empty: '▱', arrow: '→', separator: '·', bars: '▁▂▃▄▅▆▇█' }
+    : { dot: { up: '*', degraded: '+', down: '-' }, filled: '#', empty: '-', arrow: '>', separator: '|', bars: ' .:-=+*#' };
+
+export function statusDot(status: Status): string {
+  return glyphs().dot[status];
+}
+
+export function meter(percent: number | undefined, width: number): string {
+  const { filled, empty } = glyphs();
+  if (percent === undefined) return empty.repeat(width);
+  const on = Math.round((Math.max(0, Math.min(100, percent)) / 100) * width);
+  return filled.repeat(on) + empty.repeat(width - on);
+}
+
+export function sparkline(values: number[], width: number): string {
+  const bars = glyphs().bars;
+  const tail = values.slice(-width);
+  if (!tail.length) return '';
+  const max = Math.max(...tail);
+  return tail
+    .map((value) => bars[max > 0 ? Math.min(bars.length - 1, Math.floor((value / max) * bars.length)) : 0])
+    .join('');
 }
 
 // Honour $COLUMNS/$LINES first so panes that set them without a real TTY size

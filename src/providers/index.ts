@@ -6,11 +6,13 @@ import { ollama } from './ollama.ts';
 
 export const PROVIDERS: Provider[] = [litellm, llamaswap, mlx, ollama];
 export const PROVIDER_IDS: ProviderId[] = PROVIDERS.map((provider) => provider.id);
+// Ollama is a benchmarking sidecar here, not part of the serving stack: opt in with --provider.
+const DEFAULT_PROVIDERS: Provider[] = [litellm, llamaswap, mlx];
 
-const HOST = process.env.LLM_MONITOR_HOST ?? '127.0.0.1';
+export const HOST = process.env.LLM_MONITOR_HOST ?? '127.0.0.1';
 
 export function selectProviders(ids?: ProviderId[]): Provider[] {
-  return ids?.length ? PROVIDERS.filter((provider) => ids.includes(provider.id)) : PROVIDERS;
+  return ids?.length ? PROVIDERS.filter((provider) => ids.includes(provider.id)) : DEFAULT_PROVIDERS;
 }
 
 async function discover(provider: Provider): Promise<string[]> {

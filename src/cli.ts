@@ -9,6 +9,7 @@ import { exitCode } from './health.ts';
 import { History } from './history.ts';
 import { PROVIDER_IDS } from './providers/index.ts';
 import { providersText, toJson, toMarkdown, toText } from './report.ts';
+import { setAscii } from './text.ts';
 import type { ProviderId } from './types.ts';
 
 interface CommonOptions {
@@ -17,6 +18,7 @@ interface CommonOptions {
   config?: string;
   json?: boolean;
   quiet?: boolean;
+  ascii?: boolean;
 }
 
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -38,18 +40,22 @@ function parseInterval(value: string): number {
 
 function withCommonOptions(command: Command): Command {
   return command
-    .option('-p, --provider <ids>', `scope to provider(s), comma-separated: ${PROVIDER_IDS.join('|')}`, parseProviders)
+    .option('-p, --provider <ids>', `scope to provider(s), comma-separated: ${PROVIDER_IDS.join('|')} (ollama is opt-in)`, parseProviders)
     .option('-m, --model <name>', 'filter to models whose id or alias contains <name>')
     .option('-c, --config <path>', 'LiteLLM config path (default: auto-detect)')
     .option('--json', 'emit JSON to stdout (no color, no UI)')
-    .option('-q, --quiet', 'suppress headers and system panel; data only');
+    .option('-q, --quiet', 'suppress headers and system panel; data only')
+    .option('--ascii', 'ASCII borders and glyphs (auto when the locale is not UTF-8)');
 }
 
-const collectOptions = (options: CommonOptions): CollectOptions => ({
-  providers: options.provider,
-  model: options.model,
-  config: options.config,
-});
+const collectOptions = (options: CommonOptions): CollectOptions => {
+  setAscii(Boolean(options.ascii));
+  return {
+    providers: options.provider,
+    model: options.model,
+    config: options.config,
+  };
+};
 
 async function streamJson(intervalMs: number, options: CommonOptions, withHistory: boolean): Promise<never> {
   const history = new History();

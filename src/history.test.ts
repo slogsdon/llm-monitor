@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { History, WINDOW_MS, seriesKey, sparkline } from './history.ts';
+import { History, WINDOW_MS, seriesKey } from './history.ts';
+import { sparkline } from './text.ts';
 import type { Snapshot } from './types.ts';
 
 const snapshot = (genTps?: number, loaded = true): Snapshot => ({
   timestamp: 't',
+  host: 'h',
   system: { memTotal: 1, memUsed: 0 },
   providers: [{ provider: 'mlx', label: 'oMLX', url: 'http://x', status: 'up', models: [{ id: 'm', loaded, state: 'ready', genTps }] }],
 });
 
 test('sparkline scales to the max and keeps only the last width samples', () => {
-  assert.equal(sparkline([0, 4, 8]), '▁▅█');
+  assert.equal(sparkline([0, 4, 8], 20), '▁▅█');
   assert.equal(sparkline([9, 9, 1, 2], 2), '▅█');
-  assert.equal(sparkline([0, 0]), '▁▁');
-  assert.equal(sparkline([]), '');
+  assert.equal(sparkline([0, 0], 20), '▁▁');
+  assert.equal(sparkline([], 20), '');
 });
 
 test('history records idle loaded models as zero and prunes past the window', () => {

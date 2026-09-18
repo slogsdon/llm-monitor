@@ -1,5 +1,6 @@
 import { loadLiteLLMSettings, type LiteLLMSettings } from './config.ts';
 import { pollProviders, selectProviders } from './providers/index.ts';
+import { hostname } from 'node:os';
 import { systemSnapshot } from './system.ts';
 import type { ProviderId, ProviderSnapshot, Route, Snapshot } from './types.ts';
 
@@ -64,6 +65,7 @@ export async function collect(options: CollectOptions = {}): Promise<Snapshot> {
   attachAliases(providers, routes);
   return {
     timestamp: new Date().toISOString(),
+    host: hostname().replace(/\.local$/, ''),
     providers: options.model ? filterModels(providers, options.model) : providers,
     system,
   };

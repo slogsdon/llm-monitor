@@ -15,10 +15,18 @@ export interface ModelSnapshot {
   aliases?: string[];
 }
 
+export interface RouteActivity {
+  requests: number;
+  tokens: number;
+  errors: number;
+  latencyMs?: number;
+}
+
 export interface Route {
   alias: string;
   model: string;
   apiBase: string;
+  activity?: RouteActivity;
 }
 
 export interface ProviderSnapshot {
@@ -30,6 +38,8 @@ export interface ProviderSnapshot {
   note?: string;
   models: ModelSnapshot[];
   routes?: Route[];
+  activityWindowSec?: number;
+  modelMemoryMax?: number;
   extra?: Record<string, string | number>;
 }
 
@@ -38,11 +48,15 @@ export interface SystemSnapshot {
   memUsed: number;
   memPressurePct?: number;
   cpuPct?: number;
+  gpuPct?: number;
+  gpuPowerW?: number;
+  gpuCores?: number;
   chip?: string;
 }
 
 export interface Snapshot {
   timestamp: string;
+  host: string;
   providers: ProviderSnapshot[];
   system: SystemSnapshot;
 }

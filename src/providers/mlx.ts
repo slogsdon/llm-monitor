@@ -97,6 +97,7 @@ async function pollOmlx(base: string, status: OmlxStatus): Promise<ProviderSnaps
     version: status.version,
     note: activity ? undefined : 'activity endpoint unavailable; per-request metrics hidden',
     models,
+    modelMemoryMax: status.model_memory_max,
     extra: {
       avg_gen_tps: status.avg_generation_tps ?? '—',
       avg_prompt_tps: status.avg_prefill_tps ?? '—',
