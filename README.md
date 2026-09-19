@@ -32,8 +32,8 @@ Requires Node ≥ 23.6 (tests run TypeScript directly via native type stripping)
 ## Usage
 
 ```bash
-llm-monitor                     # live dashboard, 1s refresh, q to quit
-llm-monitor -i 2 -w gemma-4     # 2s refresh, only models matching "gemma-4"
+llm-monitor                     # live dashboard, 3s refresh, q to quit
+llm-monitor -i 1 -w gemma-4     # 1s refresh, only models matching "gemma-4"
 llm-monitor report              # point-in-time table
 llm-monitor report --json       # machine-readable snapshot
 llm-monitor report --markdown   # for docs
@@ -55,6 +55,18 @@ Common flags (every subcommand):
 | `--ascii` | ASCII borders/glyphs (automatic when the locale is not UTF-8; `NO_COLOR` disables colour) |
 
 Dashboard keys: `q` quit · `p` pause · `+`/`-` double/halve the interval · `i` show idle models · `?` help.
+
+## Resource use
+
+The dashboard is meant to be left running, so the polling path is tuned not to grow. Measured on an M4, the default 3s dashboard settles at **~140 MB** RSS and **~0.4 % CPU** after a 30-minute soak, with no further upward trend (+0.01 MB/min); the same stack previously climbed past 256 MB and kept going. A 1s refresh costs about 12 MB more. What keeps it there:
+
+- **Bounded V8 young generation.** The `bin` shebang runs node with `--max-semi-space-size=4`. Node's 16 MB default let V8 commit ~84 MB of heap for a ~20 MB live set; capping it holds the heap near 40 MB and saves ~50 MB of RSS. This applies when the `llm-monitor` shim is executed directly — if you launch via `node dist/cli.js` the shebang is ignored, so pass the flag yourself or set `NODE_OPTIONS=--max-semi-space-size=4`.
+- **Cached port discovery.** Probing every candidate port costs 16 requests (mlx alone offers 12), over half of them connection-refused. Discovery results are reused for 30 s, which takes a steady-state tick from 32 requests to about 5. A failed poll drops the cache so a server that restarts on another port is found on the next tick.
+- **Cached system metrics.** `vm_stat`, `sysctl` and `ioreg` are reused for 3 s and `powermetrics` for 30 s. `ioreg -c IOAccelerator` alone emits ~47 KB per call, and the four spawns together cost ~17 ms.
+- **Cached LiteLLM metadata.** The alias table is reused for 30 s and `/spend/logs/ui` for 10 s, matching the rate LiteLLM flushes its spend batches.
+- **Production React, loaded on demand.** `NODE_ENV` defaults to `production` (an explicit value is respected) and the dashboard module is imported only by `monitor`/`history` — so `report`, `providers` and `--json` do not load Ink at all (~20 MB less for a one-shot run).
+
+Of the ~140 MB steady state, roughly 92 MB is the Node/V8 floor (the same loop without Ink plateaus there) and ~46 MB is Ink/React. The 60 s history window is time-based, so a longer `--interval` yields proportionally fewer sparkline samples; series for models that stop being reported are dropped once they age out.
 
 Exit codes for `report` and `providers`: `0` healthy, `1` any provider degraded, `2` unreachable. Without `--provider`, an undetected provider is simply absent; only "nothing reachable" is `2`. With `--provider`, a requested provider being down is `2`.
 

@@ -67,7 +67,47 @@ export function aggregateActivity(rows: SpendRow[], windowStart: Date): Map<stri
 
 const spendDate = (date: Date) => date.toISOString().slice(0, 19).replace('T', ' ');
 
+// /model/info is a route table that only changes when the LiteLLM config does, and
+// /spend/logs/ui is written upstream in ~10s batches, so re-fetching either at the
+// dashboard interval parses identical JSON every tick. Each gets its own TTL; a
+// one-shot `report` starts cold and therefore still sees live data.
+export const ROUTES_TTL_MS = 30_000;
+export const ACTIVITY_TTL_MS = 10_000;
+
+interface Timed<T> {
+  at: number;
+  value: T;
+}
+
+const routesCache = new Map<string, Timed<Route[]>>();
+const activityCache = new Map<string, Timed<Map<string, RouteActivity>>>();
+
+/** Drop cached LiteLLM metadata so the next poll re-fetches it. */
+export function resetLitellmCaches(): void {
+  routesCache.clear();
+  activityCache.clear();
+}
+
+const fresh = <T>(entry: Timed<T> | undefined, ttlMs: number): boolean =>
+  entry !== undefined && Date.now() - entry.at < ttlMs;
+
+async function fetchRoutes(base: string, key?: string): Promise<Route[] | undefined> {
+  if (!key) return undefined;
+  const cached = routesCache.get(base);
+  if (fresh(cached, ROUTES_TTL_MS)) return cached!.value;
+  const info = await getJson<ModelInfo>(`${base}/model/info`, {
+    headers: { Authorization: `Bearer ${key}` },
+    timeoutMs: 3000,
+  }).catch(() => undefined);
+  if (!info) return undefined;
+  const routes = toRoutes(info);
+  routesCache.set(base, { at: Date.now(), value: routes });
+  return routes;
+}
+
 async function fetchActivity(base: string, key: string): Promise<Map<string, RouteActivity> | undefined> {
+  const cached = activityCache.get(base);
+  if (fresh(cached, ACTIVITY_TTL_MS)) return cached!.value;
   const now = new Date();
   const windowStart = new Date(now.getTime() - ACTIVITY_WINDOW_SEC * 1000);
   const query = new URLSearchParams({
@@ -79,7 +119,10 @@ async function fetchActivity(base: string, key: string): Promise<Map<string, Rou
     headers: { Authorization: `Bearer ${key}` },
     timeoutMs: 3000,
   }).catch(() => undefined);
-  return logs?.data ? aggregateActivity(logs.data, windowStart) : undefined;
+  if (!logs?.data) return undefined;
+  const activity = aggregateActivity(logs.data, windowStart);
+  activityCache.set(base, { at: Date.now(), value: activity });
+  return activity;
 }
 
 export const litellm: Provider = {
@@ -103,11 +146,10 @@ export const litellm: Provider = {
       routes: [],
     };
     const notes: string[] = [];
-    const authorized = context.litellmKey ? { Authorization: `Bearer ${context.litellmKey}` } : undefined;
 
-    const [readiness, info, activity] = await Promise.all([
+    const [readiness, routes, activity] = await Promise.all([
       getJson<Readiness>(`${base}/health/readiness`).catch(() => undefined),
-      authorized ? getJson<ModelInfo>(`${base}/model/info`, { headers: authorized, timeoutMs: 3000 }).catch(() => undefined) : undefined,
+      fetchRoutes(base, context.litellmKey),
       context.litellmKey ? fetchActivity(base, context.litellmKey) : undefined,
     ]);
 
@@ -121,8 +163,8 @@ export const litellm: Provider = {
     }
 
     if (!context.litellmKey) notes.push('no master key (LITELLM_MASTER_KEY): routes from config, no activity');
-    else if (!info) notes.push('/model/info rejected master key');
-    snapshot.routes = info ? toRoutes(info) : context.routes;
+    else if (!routes) notes.push('/model/info rejected master key');
+    snapshot.routes = routes ?? context.routes;
     if (!snapshot.routes.length) notes.push('no routes found; pass --config');
 
     if (activity) {

@@ -48,11 +48,64 @@ export function parsePowermetrics(text: string): number | undefined {
 // a single failed call per process rather than one per tick.
 let powermetricsAllowed: boolean | undefined;
 
+// Every subprocess spawn allocates its whole output as a transient string —
+// `ioreg -c IOAccelerator` alone emits ~47 KB — and the four spawns together cost
+// ~17 ms. These values move slowly enough that a human dashboard does not need them
+// at the poll interval, so each is cached independently.
+const METRIC_TTL_MS = 3_000;
+const POWER_TTL_MS = 30_000;
+
+interface Timed<T> {
+  at: number;
+  value: T;
+}
+
+const expires = <T>(entry: Timed<T> | undefined, ttlMs: number): boolean =>
+  !entry || Date.now() - entry.at >= ttlMs;
+
+let memUsedCache: Timed<number> | undefined;
+let memPressureCache: Timed<number> | undefined;
+let gpuCache: Timed<{ gpuPct?: number; gpuCores?: number }> | undefined;
+let gpuPowerCache: Timed<number | undefined> | undefined;
+
 async function gpuPower(): Promise<number | undefined> {
-  if (powermetricsAllowed === false) return undefined;
+  if (!expires(gpuPowerCache, POWER_TTL_MS)) return gpuPowerCache!.value;
+  if (powermetricsAllowed === false) {
+    gpuPowerCache = { at: Date.now(), value: undefined };
+    return undefined;
+  }
   const output = await stdout('sudo', ['-n', '/usr/bin/powermetrics', '--samplers', 'gpu_power', '-i', '100', '-n', '1']);
   powermetricsAllowed = output !== undefined;
-  return output === undefined ? undefined : parsePowermetrics(output);
+  const value = output === undefined ? undefined : parsePowermetrics(output);
+  gpuPowerCache = { at: Date.now(), value };
+  return value;
+}
+
+async function memoryUsed(): Promise<number | undefined> {
+  if (expires(memUsedCache, METRIC_TTL_MS)) {
+    const text = await stdout('/usr/bin/vm_stat', []);
+    const used = text === undefined ? undefined : parseVmStat(text);
+    if (used !== undefined) memUsedCache = { at: Date.now(), value: used };
+  }
+  return memUsedCache?.value;
+}
+
+async function memoryPressure(): Promise<number | undefined> {
+  if (expires(memPressureCache, METRIC_TTL_MS)) {
+    const level = await stdout('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_level']);
+    if (level !== undefined && Number.isFinite(Number(level.trim()))) {
+      memPressureCache = { at: Date.now(), value: 100 - Number(level.trim()) };
+    }
+  }
+  return memPressureCache?.value;
+}
+
+async function gpuLoad(): Promise<{ gpuPct?: number; gpuCores?: number } | undefined> {
+  if (expires(gpuCache, METRIC_TTL_MS)) {
+    const text = await stdout('/usr/sbin/ioreg', ['-r', '-d', '1', '-c', 'IOAccelerator']);
+    if (text !== undefined) gpuCache = { at: Date.now(), value: parseIoreg(text) };
+  }
+  return gpuCache?.value;
 }
 
 let previous: { idle: number; total: number } | undefined;
@@ -75,16 +128,15 @@ export async function systemSnapshot(): Promise<SystemSnapshot> {
   };
   if (!darwin) return snapshot;
 
-  const [vmStat, level, ioreg, power] = await Promise.all([
-    stdout('/usr/bin/vm_stat', []),
-    stdout('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_level']),
-    stdout('/usr/sbin/ioreg', ['-r', '-d', '1', '-c', 'IOAccelerator']),
+  const [used, pressure, gpu, power] = await Promise.all([
+    memoryUsed(),
+    memoryPressure(),
+    gpuLoad(),
     gpuPower(),
   ]);
-  const used = vmStat && parseVmStat(vmStat);
-  if (used) snapshot.memUsed = used;
-  if (level) snapshot.memPressurePct = 100 - Number(level.trim());
-  if (ioreg) Object.assign(snapshot, parseIoreg(ioreg));
+  if (used !== undefined) snapshot.memUsed = used;
+  if (pressure !== undefined) snapshot.memPressurePct = pressure;
+  if (gpu) Object.assign(snapshot, gpu);
   snapshot.gpuPowerW = power;
   return snapshot;
 }

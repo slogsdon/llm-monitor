@@ -1,16 +1,21 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --max-semi-space-size=4
 import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Command, InvalidArgumentError } from 'commander';
 import { collect, type CollectOptions } from './collect.ts';
 import { completionScript } from './completion.ts';
-import { runDashboard } from './dashboard.tsx';
 import { exitCode } from './health.ts';
 import { History } from './history.ts';
 import { PROVIDER_IDS } from './providers/index.ts';
 import { providersText, toJson, toMarkdown, toText } from './report.ts';
 import { setAscii } from './text.ts';
 import type { ProviderId } from './types.ts';
+
+// React's development build records per-render instrumentation (PerformanceMeasure
+// entries, devtools component descriptions) that a once-per-second dashboard turns
+// into tens of MB of avoidable garbage. Set before the dashboard is imported, which
+// is why that import is dynamic — static imports would evaluate React first.
+process.env.NODE_ENV ??= 'production';
 
 interface CommonOptions {
   provider?: ProviderId[];
@@ -58,12 +63,13 @@ const collectOptions = (options: CommonOptions): CollectOptions => {
 };
 
 async function streamJson(intervalMs: number, options: CommonOptions, withHistory: boolean): Promise<never> {
-  const history = new History();
+  // `monitor --json` never emits history, so don't retain a 60s window of samples for it.
+  const history = withHistory ? new History() : undefined;
   for (;;) {
     const started = Date.now();
     const snapshot = await collect(collectOptions(options));
-    history.record(snapshot);
-    process.stdout.write(`${JSON.stringify(withHistory ? { ...snapshot, history } : snapshot)}\n`);
+    history?.record(snapshot);
+    process.stdout.write(`${JSON.stringify(history ? { ...snapshot, history } : snapshot)}\n`);
     await sleep(Math.max(0, intervalMs - (Date.now() - started)));
   }
 }
@@ -81,11 +87,12 @@ const program = new Command('llm-monitor')
 
 withCommonOptions(program.command('monitor', { isDefault: true }))
   .description('live dashboard (default command)')
-  .option('-i, --interval <seconds>', 'refresh interval', parseInterval, 1000)
+  .option('-i, --interval <seconds>', 'refresh interval', parseInterval, 3000)
   .option('-w, --watch <model>', 'alias for --model')
   .action(async (options: CommonOptions & { interval: number; watch?: string }) => {
     options.model ??= options.watch;
     if (options.json) await streamJson(options.interval, options, false);
+    const { runDashboard } = await import('./dashboard.tsx');
     await runDashboard({ intervalMs: options.interval, collect: collectOptions(options), quiet: options.quiet });
   });
 
@@ -115,9 +122,10 @@ withCommonOptions(program.command('providers'))
 
 withCommonOptions(program.command('history'))
   .description('live 60-second tok/s sparklines per loaded model (in-memory only)')
-  .option('-i, --interval <seconds>', 'sample interval', parseInterval, 1000)
+  .option('-i, --interval <seconds>', 'sample interval', parseInterval, 3000)
   .action(async (options: CommonOptions & { interval: number }) => {
     if (options.json) await streamJson(options.interval, options, true);
+    const { runDashboard } = await import('./dashboard.tsx');
     await runDashboard({
       intervalMs: options.interval,
       collect: collectOptions(options),
