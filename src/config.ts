@@ -21,7 +21,6 @@ const DEFAULT_ENV_NAME = 'LITELLM_MASTER_KEY';
 function defaultPaths(): string[] {
   return [
     process.env.LITELLM_CONFIG,
-    join(homedir(), 'Code/otel-local-ai/litellm/config.yaml'),
     join(homedir(), '.config/litellm/config.yaml'),
     resolve('litellm_config.yaml'),
   ].filter((path): path is string => Boolean(path));
