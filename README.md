@@ -1,6 +1,6 @@
 # llm-monitor
 
-Live dashboard and snapshot reports for the local LLM stack: LiteLLM, llama-swap, oMLX / `mlx_lm.server` (Ollama on request). Polls every provider concurrently, degrades to `OFFLINE` instead of crashing, and emits clean JSON for agents.
+A terminal dashboard for a local LLM stack on macOS. It watches LiteLLM, llama-swap, oMLX and `mlx_lm.server` (Ollama if you ask for it), shows which models are loaded and how fast they're generating, and flags any server that has gone down. It also prints one-shot reports, including clean JSON for scripts and agents.
 
 ```
 llm-monitor · mac-mini                                              18:21:59 · 1s · ● HEALTHY
@@ -19,15 +19,18 @@ llm-monitor · mac-mini                                              18:21:59 ·
 q quit   p pause   +/- interval   i idle models   ? help
 ```
 
+Every provider is polled concurrently. One that's down shows as `OFFLINE` and the rest of the screen keeps working.
+
 ## Install
 
 ```bash
-cd ~/Code/llm-monitor
+git clone https://github.com/slogsdon/llm-monitor.git
+cd llm-monitor
 npm install        # also builds dist/
 npm link           # puts `llm-monitor` on PATH
 ```
 
-Requires Node ≥ 23.6 (tests run TypeScript directly via native type stripping).
+You need Node 23.6 or newer. The tests run TypeScript directly through Node's native type stripping.
 
 ## Usage
 
@@ -43,71 +46,81 @@ llm-monitor --json              # NDJSON: one snapshot per tick
 eval "$(llm-monitor completion zsh)"   # or bash
 ```
 
-Common flags (every subcommand):
+These flags work on every subcommand:
 
 | Flag | Effect |
 |---|---|
 | `-p, --provider <ids>` | Scope to `litellm`, `llamaswap`, `mlx`, `ollama` (comma-separated) |
-| `-m, --model <name>` | Filter models/routes whose id or alias contains `<name>` (idle matches are shown too) |
-| `-c, --config <path>` | LiteLLM config path (default: `$LITELLM_CONFIG`, `~/Code/otel-local-ai/litellm/config.yaml`, `~/.config/litellm/config.yaml`, `./litellm_config.yaml`) |
-| `--json` | Clean JSON on stdout, no color or UI |
+| `-m, --model <name>` | Filter models and routes whose id or alias contains `<name>` (idle matches are shown too) |
+| `-c, --config <path>` | LiteLLM config path. Defaults, in order: `$LITELLM_CONFIG`, `~/.config/litellm/config.yaml`, `./litellm_config.yaml` |
+| `--json` | Clean JSON on stdout, no colour or UI |
 | `-q, --quiet` | Drop headers and the system panel |
-| `--ascii` | ASCII borders/glyphs (automatic when the locale is not UTF-8; `NO_COLOR` disables colour) |
+| `--ascii` | ASCII borders and glyphs. This turns on by itself when the locale isn't UTF-8, and `NO_COLOR` disables colour |
 
-Dashboard keys: `q` quit · `p` pause · `+`/`-` double/halve the interval · `i` show idle models · `?` help.
+Dashboard keys: `q` quit, `p` pause, `+`/`-` double or halve the interval, `i` show idle models, `?` help.
 
-## Resource use
-
-The dashboard is meant to be left running, so the polling path is tuned not to grow. Measured on an M4, the default 3s dashboard settles at **~140 MB** RSS and **~0.4 % CPU** after a 30-minute soak, with no further upward trend (+0.01 MB/min); the same stack previously climbed past 256 MB and kept going. A 1s refresh costs about 12 MB more. What keeps it there:
-
-- **Bounded V8 young generation.** The `bin` shebang runs node with `--max-semi-space-size=4`. Node's 16 MB default let V8 commit ~84 MB of heap for a ~20 MB live set; capping it holds the heap near 40 MB and saves ~50 MB of RSS. This applies when the `llm-monitor` shim is executed directly — if you launch via `node dist/cli.js` the shebang is ignored, so pass the flag yourself or set `NODE_OPTIONS=--max-semi-space-size=4`.
-- **Cached port discovery.** Probing every candidate port costs 16 requests (mlx alone offers 12), over half of them connection-refused. Discovery results are reused for 30 s, which takes a steady-state tick from 32 requests to about 5. A failed poll drops the cache so a server that restarts on another port is found on the next tick.
-- **Cached system metrics.** `vm_stat`, `sysctl` and `ioreg` are reused for 3 s and `powermetrics` for 30 s. `ioreg -c IOAccelerator` alone emits ~47 KB per call, and the four spawns together cost ~17 ms.
-- **Cached LiteLLM metadata.** The alias table is reused for 30 s and `/spend/logs/ui` for 10 s, matching the rate LiteLLM flushes its spend batches.
-- **Production React, loaded on demand.** `NODE_ENV` defaults to `production` (an explicit value is respected) and the dashboard module is imported only by `monitor`/`history` — so `report`, `providers` and `--json` do not load Ink at all (~20 MB less for a one-shot run).
-
-Of the ~140 MB steady state, roughly 92 MB is the Node/V8 floor (the same loop without Ink plateaus there) and ~46 MB is Ink/React. The 60 s history window is time-based, so a longer `--interval` yields proportionally fewer sparkline samples; series for models that stop being reported are dropped once they age out.
-
-Exit codes for `report` and `providers`: `0` healthy, `1` any provider degraded, `2` unreachable. Without `--provider`, an undetected provider is simply absent; only "nothing reachable" is `2`. With `--provider`, a requested provider being down is `2`.
+`report` and `providers` exit `0` when everything is healthy, `1` when any provider is degraded and `2` when nothing is reachable. Without `--provider`, a provider that isn't running is left out and only "nothing reachable" returns `2`. With `--provider`, any requested provider being down returns `2`.
 
 ## Layout
 
-Organised by attention, not by provider: system meters on top, one **Models** table across every backend (generating first, then resident, then loading; idle collapsed to a count), a **Routing** panel listing only LiteLLM aliases that completed requests in the last 60 s, and a one-line provider status strip. Colour is semantic only (green/yellow/red thresholds, dim for idle); status dots carry the same information without colour.
+The screen is organised by what needs your attention, not by provider. System meters sit on top. Below them is one Models table across every backend, sorted generating first, then resident, then loading, with idle models collapsed to a count. The Routing panel lists only the LiteLLM aliases that completed a request in the last 60 seconds, and a single status line at the bottom shows each provider.
 
-Honours `$COLUMNS` / `$LINES` before the TTY size. At ≥110 columns System and Routing sit side by side; below that they stack. When a table will not fit, non-essential columns (PROMPT, MEM, CTX, MODEL-of-alias) drop first, then the name column shrinks. Short terminals cap table rows with `+N more`. A failed poll keeps the last good frame and shows `stale Ns` in the header.
+Colour only ever means something (green, yellow and red thresholds, dim for idle). The status dots carry the same information, so nothing is lost without colour.
+
+Terminal size comes from `$COLUMNS` and `$LINES` first, then the TTY. At 110 columns or wider, System and Routing sit side by side, and below that they stack. When a table won't fit, the optional columns (PROMPT, MEM, CTX and the alias MODEL column) drop first, then the name column shrinks. Short terminals cap the rows with `+N more`. If a poll fails, the last good frame stays up with `stale Ns` in the header.
 
 ## What each provider exposes
 
 | Provider | Ports | Endpoints | Metrics |
 |---|---|---|---|
-| LiteLLM | 4000 | `/health/liveliness`, `/health/readiness`, `/model/info`, `/spend/logs/ui` (last two need the master key) | alias routes; per-alias requests, tokens, mean latency and errors over the last 60 s (spend logs are flushed in ~10 s batches, so activity lags slightly) |
-| llama-swap | 8080–8082 | `/v1/models`, `/running`, `/upstream/<model>/{metrics,props}` | load state per model; llama.cpp tok/s, KV usage, queue when started with `--metrics` |
-| oMLX | 8000, 8080–8090 | `/api/status`, `/v1/models/status`, `/admin/api/activity` | per-request gen/prompt tok/s, context in use, memory, active/waiting queue |
-| `mlx_lm.server` | 8080–8090 | `/v1/models` | loaded model only |
-| Ollama | 11434 | `/api/version`, `/api/ps`, `/api/tags` | resident models, memory, context length — **opt-in** via `--provider ollama` (benchmarking sidecar, not part of the serving stack) |
+| LiteLLM | 4000 | `/health/liveliness`, `/health/readiness`, `/model/info`, `/spend/logs/ui` (the last two need the master key) | Alias routes, plus per-alias requests, tokens, mean latency and errors over the last 60 s. Spend logs flush in roughly 10 s batches, so activity lags a little |
+| llama-swap | 8080-8082 | `/v1/models`, `/running`, `/upstream/<model>/{metrics,props}` | Load state per model. With llama.cpp started under `--metrics`, also tok/s, KV usage and queue |
+| oMLX | 8000, 8080-8090 | `/api/status`, `/v1/models/status`, `/admin/api/activity` | Per-request gen and prompt tok/s, context in use, memory, active and waiting queue |
+| `mlx_lm.server` | 8080-8090 | `/v1/models` | Loaded model only |
+| Ollama | 11434 | `/api/version`, `/api/ps`, `/api/tags` | Resident models, memory and context length. Opt-in with `--provider ollama`, since I run it as a benchmarking sidecar rather than part of the serving stack |
 
-LiteLLM master key: `$LITELLM_MASTER_KEY`, else the `os.environ/…` name from the config's `general_settings.master_key`, resolved from a `.env` beside or one directory above the config. Without a key, routes fall back to the config file. Aliases are cross-referenced onto backend models by port + model name (exposed as `aliases` in `--json`) so `--model fast` also matches the backend model it routes to.
+The LiteLLM master key comes from `$LITELLM_MASTER_KEY`. Failing that, llm-monitor reads the `os.environ/…` name from the config's `general_settings.master_key` and looks it up in a `.env` beside the config or one directory above it. Without a key, routes come from the config file instead.
 
-`LLM_MONITOR_HOST` overrides the probe host (default `127.0.0.1`).
+Aliases are matched to backend models by port and model name, and they show up as `aliases` in `--json`. That's why `--model fast` also matches the backend model `fast` routes to.
+
+Set `LLM_MONITOR_HOST` to probe somewhere other than `127.0.0.1`.
 
 ## System metrics (macOS)
 
-- **GPU utilisation** comes from `ioreg -c IOAccelerator` ("Device Utilization %") — no root needed.
-- **GPU power (W)** needs `powermetrics`, which is root-only. To show it, allow it without a password:
+GPU utilisation comes from `ioreg -c IOAccelerator` ("Device Utilization %"), which doesn't need root.
 
-  ```bash
-  echo "$USER ALL=(root) NOPASSWD: /usr/bin/powermetrics" | sudo tee /etc/sudoers.d/powermetrics
-  sudo chmod 440 /etc/sudoers.d/powermetrics
-  ```
+GPU power in watts needs `powermetrics`, and that is root-only. To show it, allow it without a password:
 
-  llm-monitor probes `sudo -n powermetrics` once per process; without the rule it silently shows utilisation only.
-- **MEM** is Activity Monitor's "Memory Used" (wired + app + compressed, from `vm_stat`) plus the kernel's memory-pressure level (`kern.memorystatus_level`, inverted). `MDL` is resident model memory against oMLX's model-memory ceiling.
+```bash
+echo "$USER ALL=(root) NOPASSWD: /usr/bin/powermetrics" | sudo tee /etc/sudoers.d/powermetrics
+sudo chmod 440 /etc/sudoers.d/powermetrics
+```
+
+llm-monitor tries `sudo -n powermetrics` once per process. Without the rule it quietly shows utilisation only.
+
+MEM matches Activity Monitor's "Memory Used" (wired + app + compressed, from `vm_stat`), plus the kernel's memory-pressure level (`kern.memorystatus_level`, inverted). MDL is resident model memory against oMLX's model-memory ceiling.
+
+## Resource use
+
+The dashboard is meant to be left running, so I tuned the polling path not to grow. On an M4, the default 3s dashboard settles at about 140 MB RSS and 0.4% CPU after a 30-minute soak, with no upward trend left (+0.01 MB/min). An earlier version climbed past 256 MB and kept going. A 1s refresh costs about 12 MB more.
+
+Here's what holds it there.
+
+- The `bin` shebang runs node with `--max-semi-space-size=4`. Node's 16 MB default let V8 commit around 84 MB of heap for a 20 MB live set. Capping it keeps the heap near 40 MB and saves about 50 MB of RSS. This only applies when you run the `llm-monitor` shim directly. If you launch with `node dist/cli.js`, the shebang is ignored, so pass the flag yourself or set `NODE_OPTIONS=--max-semi-space-size=4`.
+- Port discovery is cached for 30 s. Probing every candidate port costs 16 requests (mlx alone has 12 candidates), and over half of them get connection-refused. With the cache, a steady-state tick drops from 32 requests to about 5. A failed poll clears the cache, so a server that restarts on another port is found on the next tick.
+- System metrics are cached too: `vm_stat`, `sysctl` and `ioreg` for 3 s, `powermetrics` for 30 s. `ioreg -c IOAccelerator` alone prints about 47 KB per call, and the four spawns together cost around 17 ms.
+- The LiteLLM alias table is reused for 30 s and `/spend/logs/ui` for 10 s, which matches how often LiteLLM flushes its spend batches.
+- React runs in production mode and loads only when needed. `NODE_ENV` defaults to `production` (an explicit value is respected), and only `monitor` and `history` import the dashboard module. `report`, `providers` and `--json` never load Ink, which saves about 20 MB on a one-shot run.
+
+Of the 140 MB steady state, roughly 92 MB is the Node/V8 floor (the same loop without Ink plateaus there) and about 46 MB is Ink and React.
+
+The 60 s history window is time-based, so a longer `--interval` gives you fewer sparkline samples. Series for models that stop reporting are dropped once they age out.
 
 ## Known gaps
 
-- Ollama does not expose tok/s outside a generation response; shows `—`.
-- LiteLLM activity is per completed request, so an in-flight request appears on the backend's ACT/Q column first and in Routing once it finishes. Per-alias gen tok/s is deliberately not shown: LiteLLM's `completionStartTime` equals `endTime` for non-streamed calls, which would make the number meaningless.
-- llama-swap `/upstream/*/metrics` and `/props` parsing is written against llama.cpp's documented gauge names and could not be exercised at build time (no model was running).
+- Ollama doesn't expose tok/s outside a generation response, so that column shows `—`.
+- LiteLLM activity is counted per completed request. An in-flight request shows up in the backend's ACT/Q column first and in Routing once it finishes. I left out per-alias gen tok/s on purpose, because LiteLLM's `completionStartTime` equals `endTime` for non-streamed calls and the number would be meaningless.
+- The llama-swap `/upstream/*/metrics` and `/props` parsing follows llama.cpp's documented gauge names. I couldn't exercise it at build time because no model was running.
 - `history` keeps its 60-second window in process memory only.
 
 ## Development
@@ -115,4 +128,9 @@ LiteLLM master key: `$LITELLM_MASTER_KEY`, else the `os.environ/…` name from t
 ```bash
 npm run build      # tsc → dist/
 npm test           # node:test, no framework
+npm run typecheck
 ```
+
+## License
+
+MIT

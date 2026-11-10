@@ -2,6 +2,32 @@
   "name": "llm-monitor",
   "version": "0.1.0",
   "description": "Live dashboard and snapshot reports for local LLM servers: LiteLLM, llama-swap, oMLX/mlx_lm, Ollama",
+  "keywords": [
+    "llm",
+    "local-llm",
+    "litellm",
+    "llama-swap",
+    "mlx",
+    "omlx",
+    "ollama",
+    "llama-cpp",
+    "apple-silicon",
+    "macos",
+    "monitoring",
+    "dashboard",
+    "tui",
+    "cli",
+    "ink"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/slogsdon/llm-monitor.git"
+  },
+  "homepage": "https://github.com/slogsdon/llm-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/slogsdon/llm-monitor/issues"
+  },
+  "author": "Shane Logsdon",
   "type": "module",
   "bin": {
     "llm-monitor": "dist/cli.js"
